@@ -315,6 +315,16 @@ export function seerClaimant(st: GameState): number | null {
   return credible[credible.length - 1].seat;
 }
 
+/** A living seer claimant whose check is proven right (target revealed and matches). */
+export function verifiedSeerClaimant(st: GameState): number | null {
+  for (const c of st.claims) {
+    if (c.kind !== 'seer' || c.seat === st.me.seat || c.target === null || c.werewolf === null) continue;
+    const role = st.revealed.get(c.target);
+    if (role && (role === 'werewolf') === c.werewolf) return c.seat;
+  }
+  return null;
+}
+
 /** A living seer claimant whose check is provably wrong: a fake seer, i.e. a wolf. */
 export function fakeSeerClaimant(st: GameState): number | null {
   for (const c of st.claims) {
@@ -366,15 +376,25 @@ export function decideKill(st: GameState, p: Pending, rng: () => number): number
   return Math.min(...options);
 }
 
-/** The doctor's protect: the seer claimant first, else the most valuable villager. */
+/** The doctor's protect: a proven seer first, else the most valuable villager. */
 export function decideProtect(st: GameState, p: Pending): number | null {
   const options = inOptions(p.options, livingNonSelf(st));
   if (options.length === 0) return null;
   const last = st.myLastProtect?.seat ?? null;
   const usable = options.filter((s) => s !== last);
   const pool = usable.length > 0 ? usable : options;
+  // Protect a seer only when their check is proven right, or when they are
+  // the single credible claimant. With several unverified claimants one is
+  // a fake, so protect the most valuable villager instead.
+  const verified = verifiedSeerClaimant(st);
+  if (verified !== null && pool.includes(verified)) return verified;
   const seer = seerClaimant(st);
-  if (seer !== null && pool.includes(seer)) return seer;
+  if (seer !== null && pool.includes(seer)) {
+    const claimants = st.claims.filter(
+      (c) => c.kind === 'seer' && c.seat !== st.me.seat && st.livingSeats.includes(c.seat),
+    );
+    if (claimants.length === 1) return seer;
+  }
   const sus = suspicion(st);
   const dang = danger(st, sus);
   // Most valuable = most dangerous to the wolves and least suspicious.
@@ -562,10 +582,53 @@ const REASONS = {
     if (passes >= 2 && said === 0) return 'they have said almost nothing while villagers died';
     return null;
   },
+  // Non-reveal reasons: concrete, checkable facts that work from day 1,
+  // before any role is revealed. A wolf's early accusations need these,
+  // or they fall back to a generic line and look evasive.
+  votedFor: (st: GameState, seat: number): string | null => {
+    for (const [day, votes] of st.votesByDay) {
+      for (const v of votes) {
+        if (v.seat === seat && v.target !== null) {
+          return `they voted to exile ${nameOf(st, v.target)} on day ${day}`;
+        }
+      }
+    }
+    return null;
+  },
+  passed: (st: GameState, seat: number): string | null => {
+    const passes = st.passes.filter((x) => x.seat === seat);
+    if (passes.length >= 1) return 'they passed instead of speaking when it was their turn';
+    return null;
+  },
+  silent: (st: GameState, seat: number): string | null => {
+    const said = st.statements.filter((x) => x.seat === seat).length;
+    if (said === 0 && st.day >= 2) return 'they have said nothing at all while villagers died';
+    return null;
+  },
+  generic: (st: GameState, seat: number): string | null => {
+    const said = st.statements.filter((x) => x.seat === seat);
+    if (said.length === 0) return null;
+    const generic = said.every((s) => {
+      SEAT_MENTION.lastIndex = 0;
+      return !SEAT_MENTION.test(s.text);
+    });
+    if (generic) return 'everything they have said is vague, with no name and no reason';
+    return null;
+  },
 };
 
 const reasonFor = (st: GameState, seat: number): string => {
-  for (const fn of [REASONS.votedPower, REASONS.votedVillager, REASONS.defendedWolf, REASONS.accusedVillager, REASONS.quiet]) {
+  for (const fn of [
+    REASONS.votedPower,
+    REASONS.votedVillager,
+    REASONS.defendedWolf,
+    REASONS.accusedVillager,
+    REASONS.quiet,
+    REASONS.votedFor,
+    REASONS.passed,
+    REASONS.silent,
+    REASONS.generic,
+  ]) {
     const r = fn(st, seat);
     if (r) return r;
   }
