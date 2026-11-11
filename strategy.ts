@@ -621,16 +621,10 @@ export function decideSpeak(st: GameState, p: Pending, rng: () => number): strin
     // The push target is never my partner: deflect off them, push a villager.
     const pushTarget = maxBy(livingNonWolves(st), sus);
     const pushSus = pushTarget !== null ? (sus.get(pushTarget) ?? 0) : 0;
-    // A pass costs suspicion (+0.25 a round) while a neutral statement costs
-    // nothing, so the wolf always speaks. Round 1 stays neutral; the push
-    // comes in round 2, when it can still tip the vote.
-    const neutral = [
-      'Let us not rush the vote. One wrong exile helps the wolves.',
-      'I am watching the quiet ones. Someone is hiding.',
-      'No strong read yet. Let us see how the votes go.',
-      'Who has been quiet today? That is where I am looking.',
-      'Let us hear from everyone before we decide.',
-    ];
+    // A reader who tracks votes and speech catches a wolf that hides behind
+    // generic lines or stays quiet, so the wolf always speaks with a
+    // specific accusation, from round 1. A pass costs suspicion while a
+    // content-free line costs the same, so there is no safe silence.
     // Deflect off the partner first.
     const partner = st.me.partner?.seat ?? null;
     if (partner !== null && (sus.get(partner) ?? 0) >= 1 && pushTarget !== null) {
@@ -644,7 +638,8 @@ export function decideSpeak(st: GameState, p: Pending, rng: () => number): strin
     if ((sus.get(st.me.seat) ?? 0) >= 2 && pushTarget !== null) {
       return cut(`I am not a wolf. ${nameOf(st, pushTarget)} is the one to look at: ${reasonFor(st, pushTarget)}.`);
     }
-    if (round === 2 && pushTarget !== null && pushSus >= 1) {
+    // Push the most suspicious villager with a reason, from round 1.
+    if (pushTarget !== null && pushSus >= 0.5) {
       const lines = [
         `I agree with the suspicion on ${nameOf(st, pushTarget)}: ${reasonFor(st, pushTarget)}.`,
         `${nameOf(st, pushTarget)} looks like a wolf to me: ${reasonFor(st, pushTarget)}.`,
@@ -652,7 +647,19 @@ export function decideSpeak(st: GameState, p: Pending, rng: () => number): strin
       ];
       return cut(pick(rng, lines));
     }
-    return cut(pick(rng, neutral));
+    // No push target yet: a specific observation, never a generic line.
+    const passer = st.passes.find((x) => x.day === st.day && x.seat !== st.me.seat);
+    if (passer) {
+      return cut(`${nameOf(st, passer.seat)} passed instead of speaking. I want to hear from them before we vote.`);
+    }
+    const quiet = livingNonWolves(st).find((s) => st.statements.filter((x) => x.seat === s).length === 0);
+    if (quiet !== undefined) {
+      return cut(`${nameOf(st, quiet)} has said nothing while villagers died. That is where I am looking.`);
+    }
+    if (pushTarget !== null) {
+      return cut(`I am suspicious of ${nameOf(st, pushTarget)}: ${reasonFor(st, pushTarget)}.`);
+    }
+    return cut('Let us look at the votes so far: someone here voted for a villager who turned out innocent.');
   }
 
   // Village roles (seer without a find, doctor, villager).
@@ -673,14 +680,18 @@ export function decideSpeak(st: GameState, p: Pending, rng: () => number): strin
   if (target !== null && targetSus >= 1 && round === 2) {
     return cut(`I am leaning ${nameOf(st, target)}: ${reasonFor(st, target)}.`);
   }
+  // No strong read: a specific observation, not a generic line.
+  const passer = st.passes.find((x) => x.day === st.day && x.seat !== st.me.seat);
+  if (passer) {
+    return cut(`${nameOf(st, passer.seat)} passed instead of speaking. I want to hear from them before we vote.`);
+  }
+  const quiet = livingNonSelf(st).find((s) => st.statements.filter((x) => x.seat === s).length === 0);
+  if (quiet !== undefined) {
+    return cut(`${nameOf(st, quiet)} has not spoken yet. Let us hear from them before we decide.`);
+  }
   // The doctor never claims; the seer without a find stays low-key.
   if (rng() < 0.5) return null;
-  const mildVillage = [
-    'No strong read yet. Let us hear everyone before we vote.',
-    'Let us be careful: one wrong exile and the wolves are closer to parity.',
-    'I want to hear from the quiet seats before we decide.',
-  ];
-  return cut(pick(rng, mildVillage));
+  return cut('I have no clear wolf yet, but I am watching the votes: someone here voted for a villager who turned out innocent.');
 }
 
 /** Which debate round is this speak decision in? */
